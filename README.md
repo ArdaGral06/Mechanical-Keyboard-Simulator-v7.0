@@ -26,4 +26,4 @@ terminal-based mechanical keyboard simulator that reproduces realistic key and m
 - **Audio Latency:** ~11 ms
 - **CPU Usage:** Low; depends on the number of simultaneous sounds (polyphony)
 - **RAM Usage:** Minimal; only a few MB for sound pools
-- **Supported OS:** Windows (Python 3.9+ recommended)
+- **Supported OS:** Windows, macOS, Linux (Python 3.9+ recommended)
