@@ -1,2 +1,18 @@
 # Mechanical-Keyboard-Simulator-v7.0
 terminal-based mechanical keyboard simulator that reproduces realistic key and mouse sounds with near-zero latency. Supports customizable key bindings, adjustable volume, repeat mode, and multiple DSP presets for authentic typing feedback.
+
+
+## 📦 setup
+* install latest python from here "https://www.python.org/"
+* install all of this python libraries: "pygame pynput numpy scipy"
+* install my project from the releases tab
+* Create a folder on your computer — this folder will be where your default mouse and keyboard sounds should be located. Then, place the sound files into that folder: "mouse_tik.wav" (the effect sound file you want to assign to your mouse) and "normal_tik.wav" (the effect sound file you want to assign to your keyboard). You can find and download these from somewhere on the internet. If your sound files are not in .wav format, you can convert them to .wav here: "https://convertio.co/en/
+". If you want to trim certain parts of the sound file you found, this site will help: https://audiotrimmer.com/
+. Remember, your sound files must always be .wav for the lowest latency and minimum system requirements; otherwise, the application will give an error. Once you have done all this, move to the next step: open the config.json file and replace this part with the directory of the folder you created: "dir" : "C:/Users/TYPE_YOUR_DIRECTION", tip: if you are using Windows 11, you can right-click the folder and choose "Copy as path". Important note: make sure your directory starts with "/" instead of "\"; otherwise, you will get an error. Yes, that was the setup part, you can find the other necessary information below.
+
+## ❓How To Run It
+*open powershell from your computer
+*type cd C:\Users\Enter_the_directory_of_the_folder_containing_the_code_you_downloaded_from_my_GitHub_repo
+*then type py "main.py" and there you go code is working now.
+
+
