@@ -1,0 +1,34 @@
+{
+    "_comment": "DSP Preset tanımları. Kod = engine, ayar = data. Pitch/bas/presence/reverb değerlerini buradan düzenleyin.",
+
+    "highpass_fc_hz": 60.0,
+
+    "normal_key": {
+        "_desc"    : "Alfanümerik tuşlar — doğal TIK sesi",
+        "pitch"    : { "min": 0.92, "range": 0.16 },
+        "bass_db"  : 0.0,
+        "bass_fc"  : 350.0,
+        "presence" : { "db_min": 1.5, "db_range": 1.5, "fc": 2200.0 },
+        "reverb"   : { "decay_min": 0.05, "decay_range": 0.08,
+                       "delay_min": 0.004, "delay_range": 0.006 }
+    },
+
+    "heavy_key": {
+        "_desc"    : "Büyük tuşlar (Space/Enter/BS/Shift…) — derin THUNK sesi",
+        "pitch"    : { "min": 0.70, "range": 0.12 },
+        "bass"     : { "db_min": 6.0, "db_range": 4.0,
+                       "fc_min": 260.0, "fc_range": 140.0 },
+        "presence" : { "db_min": 0.0, "db_range": 0.0, "fc": 2200.0 },
+        "reverb"   : { "decay_min": 0.16, "decay_range": 0.14,
+                       "delay_min": 0.012, "delay_range": 0.009 }
+    },
+
+    "mouse_click": {
+        "_desc"    : "Fare tıklaması — hafif bas, kısa kuyruk",
+        "pitch"    : { "min": 0.88, "range": 0.18 },
+        "bass"     : { "db_min": 2.0, "db_range": 2.0, "fc_min": 380.0, "fc_range": 0.0 },
+        "presence" : { "db_min": 0.0, "db_range": 0.0, "fc": 2200.0 },
+        "reverb"   : { "decay_min": 0.07, "decay_range": 0.08,
+                       "delay_min": 0.005, "delay_range": 0.006 }
+    }
+}
