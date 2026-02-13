@@ -2,7 +2,7 @@
     "_comment": "Mechanical Keyboard Simulator — Runtime Config. Kodu değiştirmeden ayarları burada düzenleyin.",
 
     "sound": {
-        "dir"         : "C:/Users/PC006/Desktop/VALORANT/keyboardandmousesounds",
+        "dir"         : "C:/Users/TYPE_YOUR_DIRECTIORY",
         "key_file"    : "normal_tik.wav",
         "mouse_file"  : "mouse_tik.wav"
     },
