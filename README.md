@@ -11,6 +11,7 @@ terminal-based mechanical keyboard simulator that reproduces realistic key and m
 . Remember, your sound files must always be .wav for the lowest latency and minimum system requirements; otherwise, the application will give an error. Once you have done all this, move to the next step: open the config.json file and replace this part with the directory of the folder you created: "dir" : "C:/Users/TYPE_YOUR_DIRECTION", tip: if you are using Windows 11, you can right-click the folder and choose "Copy as path". Important note: make sure your directory starts with "**/**" instead of "**\(backslash)**"; otherwise, you will get an error. Yes, that was the setup part, you can find the other necessary information below.
 
 ## ❓How To Run It
+* Basic way: find your code folders right click on it click "**Open in Windows Terminal**"
 * open powershell from your computer
 * type cd C:\Users\Enter_the_directory_of_the_folder_containing_the_code_you_downloaded_from_my_GitHub_repo
 * then type py "main.py" and there you go code is working now.
