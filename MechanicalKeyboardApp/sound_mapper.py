@@ -4,25 +4,19 @@ sound_mapper.py — Ses Dosyası ↔ Tuş Eşleştirme Katmanı
 İki mod destekler:
 
   1. Tek Dosya Modu:
-       Kullanıcı bir .wav seçer → opsiyonel olarak dosya adından tuş
-       otomatik tahmin edilir → onaylar veya başka tuşa atar.
+       Kullanıcı bir .wav seçer → dosya adından tuş otomatik tahmin edilir
+       → onaylar veya tuşa basarak başka tuşa atar.
 
   2. Klasör Modu:
        Kullanıcı klasör seçer → içindeki .wav dosyaları taranır →
-       her dosya adı bilinen bir tuş adıyla eşleştirilir →
-       eşleşmeyen dosyalar rapor edilir → onay alınır → toplu atama.
+       dosya adından tuş otomatik eşleştirilir → özet gösterilir
+       → onay alınır → toplu atama yapılır.
 
-Desteklenen dosya adı örnekleri (uzantısız, büyük/küçük harf fark etmez):
-  space, enter, return, backspace, tab, esc, escape,
-  shift, shift_l, shift_r, ctrl, ctrl_l, ctrl_r, alt, alt_l, alt_r,
-  caps, caps_lock, delete, del, insert, ins,
-  home, end, page_up, page_down, pgup, pgdn, pgdown,
-  up, down, left, right, arrow_up, arrow_down, arrow_left, arrow_right,
+Desteklenen dosya adı örnekleri (büyük/küçük harf fark etmez):
+  space, enter, backspace, tab, esc, shift, ctrl, alt,
+  caps_lock, delete, home, end, page_up, up, down, left, right,
   f1..f12, a..z, 0..9,
-  mouse_left, left_click, mouse_right, right_click, mouse_middle, middle_click,
-  num0..num9, numpad0..numpad9,
-  plus, minus, equals, period, comma, semicolon, slash, backslash,
-  quote, backtick, tilde, ...
+  mouse_left, mouse_right, mouse_middle, num0..num9 ...
 """
 
 from __future__ import annotations
@@ -39,9 +33,6 @@ log = logging.getLogger("KeySim.SoundMapper")
 # ─────────────────────────────────────────────────────────────
 #  DOSYA ADI → TUŞTANMLAYICI HARİTASI
 # ─────────────────────────────────────────────────────────────
-# Anahtar  : dosya adı (uzantısız, lowercase) — birden fazla alias desteklenir
-# Değer    : pynput tuş tanımlayıcısı (InputHandler'ın normalize ettiği format)
-
 _ALIASES: List[Tuple[str, str]] = [
     # ── Boşluk / Enter / Büyük tuşlar ──────────────────────────
     ("space",       "Key.space"),
@@ -152,66 +143,43 @@ _ALIASES: List[Tuple[str, str]] = [
     *[(f"kp{i}",     f"Key.num_{i}") for i in range(10)],
 
     # ── Noktalama / Semboller ──────────────────────────────────
-    ("period",        "."),
-    ("dot",           "."),
-    ("comma",         ","),
-    ("semicolon",     ";"),
-    ("colon",         ":"),
-    ("slash",         "/"),
-    ("backslash",     "\\"),
-    ("quote",         "'"),
-    ("doublequote",   '"'),
-    ("apostrophe",    "'"),
-    ("backtick",      "`"),
-    ("tilde",         "~"),
-    ("exclamation",   "!"),
-    ("at",            "@"),
-    ("hash",          "#"),
-    ("dollar",        "$"),
-    ("percent",       "%"),
-    ("caret",         "^"),
-    ("ampersand",     "&"),
-    ("asterisk",      "*"),
-    ("star",          "*"),
-    ("minus",         "-"),
-    ("hyphen",        "-"),
-    ("underscore",    "_"),
-    ("plus",          "+"),
-    ("equals",        "="),
-    ("equal",         "="),
-    ("open_bracket",  "["),
-    ("close_bracket", "]"),
-    ("open_brace",    "{"),
-    ("close_brace",   "}"),
-    ("open_paren",    "("),
-    ("close_paren",   ")"),
-    ("pipe",          "|"),
-    ("less",          "<"),
-    ("greater",       ">"),
+    ("period",        "."),   ("dot",           "."),
+    ("comma",         ","),   ("semicolon",      ";"),
+    ("colon",         ":"),   ("slash",          "/"),
+    ("backslash",    "\\"),   ("quote",          "'"),
+    ("doublequote",  '"'),    ("apostrophe",     "'"),
+    ("backtick",      "`"),   ("tilde",          "~"),
+    ("exclamation",   "!"),   ("at",             "@"),
+    ("hash",          "#"),   ("dollar",         "$"),
+    ("percent",       "%"),   ("caret",          "^"),
+    ("ampersand",     "&"),   ("asterisk",       "*"),
+    ("star",          "*"),   ("minus",          "-"),
+    ("hyphen",        "-"),   ("underscore",     "_"),
+    ("plus",          "+"),   ("equals",         "="),
+    ("equal",         "="),   ("open_bracket",   "["),
+    ("close_bracket", "]"),   ("open_brace",     "{"),
+    ("close_brace",   "}"),   ("open_paren",     "("),
+    ("close_paren",   ")"),   ("pipe",           "|"),
+    ("less",          "<"),   ("greater",        ">"),
     ("question",      "?"),
 ]
 
-# F1–F12 tuşları
+# F1–F12
 _ALIASES += [(f"f{i}", f"Key.f{i}") for i in range(1, 13)]
-
-# a–z (tek harf dosya adları)
+# a–z (tek harf)
 _ALIASES += [(c, c) for c in "abcdefghijklmnopqrstuvwxyz"]
-
-# 0–9 (tek rakam dosya adları)
+# 0–9
 _ALIASES += [(str(d), str(d)) for d in range(10)]
-
-# Büyük harf varyantları (A.wav → a)
+# Büyük harf varyantları
 _ALIASES += [(c.upper(), c) for c in "abcdefghijklmnopqrstuvwxyz"]
 
-# Sözlük olarak derle — son alias kazanır (genel → özel sıra)
 FILENAME_TO_KEY: Dict[str, str] = {alias: key for alias, key in _ALIASES}
 
 
 # ─────────────────────────────────────────────────────────────
-#  YARDIMCI: TKİNTER KONTROLÜ
+#  TKİNTER KONTROLÜ
 # ─────────────────────────────────────────────────────────────
 def _has_tkinter() -> bool:
-    """tkinter ve görsel display kullanılabilir mi?"""
     try:
         import tkinter as tk
         root = tk.Tk()
@@ -223,13 +191,9 @@ def _has_tkinter() -> bool:
 
 
 # ─────────────────────────────────────────────────────────────
-#  DOSYA / KLASÖR SEÇİCİ (GUI)
+#  GUI SEÇİCİLER
 # ─────────────────────────────────────────────────────────────
 def pick_file_gui(title: str = "Select .wav file") -> Optional[Path]:
-    """
-    tkinter filedialog ile tek .wav dosyası seç.
-    Döner: seçilen dosyanın Path'i, iptal → None.
-    """
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -237,9 +201,9 @@ def pick_file_gui(title: str = "Select .wav file") -> Optional[Path]:
         root.withdraw()
         root.attributes("-topmost", True)
         path = filedialog.askopenfilename(
-            title      = title,
-            filetypes  = [("WAV files", "*.wav"), ("All files", "*.*")],
-            parent     = root,
+            title     = title,
+            filetypes = [("WAV files", "*.wav"), ("All files", "*.*")],
+            parent    = root,
         )
         root.destroy()
         return Path(path) if path else None
@@ -249,10 +213,6 @@ def pick_file_gui(title: str = "Select .wav file") -> Optional[Path]:
 
 
 def pick_folder_gui(title: str = "Select sound folder") -> Optional[Path]:
-    """
-    tkinter filedialog ile klasör seç.
-    Döner: seçilen klasörün Path'i, iptal → None.
-    """
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -274,75 +234,56 @@ def guess_key_from_filename(wav_path: Path) -> Optional[str]:
     """
     Dosya adından tuş tanımlayıcısını tahmin et.
 
-    Örnekler:
-      space.wav       → "Key.space"
-      Enter.wav       → "Key.enter"
-      W.wav           → "w"
-      backspace.wav   → "Key.backspace"
-      mouse_left.wav  → "Button.left"
-      f5.wav          → "Key.f5"
-      Bilinmeyen.wav  → None
+    space.wav  → "Key.space"  |  W.wav → "w"  |  bilinmeyen.wav → None
     """
     stem = wav_path.stem.lower().strip()
-    # Doğrudan eşleşme
     if stem in FILENAME_TO_KEY:
         return FILENAME_TO_KEY[stem]
-    # Boşlukları alt çizgiye çevir (örn. "shift left.wav")
-    stem_norm = stem.replace(" ", "_").replace("-", "_")
-    if stem_norm in FILENAME_TO_KEY:
-        return FILENAME_TO_KEY[stem_norm]
-    return None
+    norm = stem.replace(" ", "_").replace("-", "_")
+    return FILENAME_TO_KEY.get(norm)
 
 
 # ─────────────────────────────────────────────────────────────
 #  KLASÖR TARAMA
 # ─────────────────────────────────────────────────────────────
 class FolderScanResult:
-    """Klasör tarama sonucu."""
-
     def __init__(self) -> None:
-        self.matched  : Dict[str, Path] = {}   # key_id  → wav_path
-        self.unmatched: List[Path]      = []   # eşleşemeyen dosyalar
+        self.matched  : Dict[str, Path] = {}
+        self.unmatched: List[Path]      = []
         self.total    : int             = 0
 
-    def summary(self) -> str:
+    def summary(self, s: dict) -> str:
+        """Lokalize özet metni üret. s = STRINGS[lang]"""
         lines = [
-            f"  Toplam .wav: {self.total}",
-            f"  Eşlenen    : {len(self.matched)}",
-            f"  Eşlenemeyen: {len(self.unmatched)}",
+            f"  {s['mapper_total']}: {self.total}",
+            f"  {s['mapper_matched']}: {len(self.matched)}",
+            f"  {s['mapper_unmatched']}: {len(self.unmatched)}",
         ]
         if self.matched:
-            lines.append("\n  ✔ Eşlenen tuşlar:")
+            lines.append(f"\n  ✔ {s['mapper_matched_keys']}:")
             for kid, p in sorted(self.matched.items()):
                 lines.append(f"     {p.name:<28} → {kid}")
         if self.unmatched:
-            lines.append("\n  ✘ Eşlenemeyen dosyalar (atlandı):")
+            lines.append(f"\n  ✘ {s['mapper_skipped']}:")
             for p in self.unmatched:
                 lines.append(f"     {p.name}")
         return "\n".join(lines)
 
 
 def scan_folder(folder: Path) -> FolderScanResult:
-    """
-    Klasördeki tüm .wav dosyalarını tara ve otomatik eşleştir.
-
-    Döner: FolderScanResult (matched, unmatched, total)
-    """
-    result = FolderScanResult()
+    """Klasördeki tüm .wav dosyalarını tara ve otomatik eşleştir."""
+    result   = FolderScanResult()
     wav_files = sorted(folder.glob("*.wav")) + sorted(folder.glob("*.WAV"))
 
-    # Tekrar edenler kaldır (case-insensitive sistemlerde glob ikisi de döner)
     seen: set = set()
-    unique_wavs: List[Path] = []
+    unique: List[Path] = []
     for p in wav_files:
-        key = p.stem.lower()
-        if key not in seen:
-            seen.add(key)
-            unique_wavs.append(p)
+        if p.stem.lower() not in seen:
+            seen.add(p.stem.lower())
+            unique.append(p)
 
-    result.total = len(unique_wavs)
-
-    for wav in unique_wavs:
+    result.total = len(unique)
+    for wav in unique:
         key_id = guess_key_from_filename(wav)
         if key_id:
             result.matched[key_id] = wav
@@ -353,33 +294,32 @@ def scan_folder(folder: Path) -> FolderScanResult:
 
 
 # ─────────────────────────────────────────────────────────────
-#  İNTERAKTİF ATAMA AKIŞI
+#  İNTERAKTİF ATAMA AKIŞI — ui.STRINGS ile lokalize
 # ─────────────────────────────────────────────────────────────
 def interactive_custom_flow(
-    lang          : str,
+    lang            : str,
     current_bindings: Dict[str, str],
 ) -> Optional[Dict[str, str]]:
     """
     Kullanıcıya iki mod sunar:
       [1] Tek dosya seç → tuşa ata
-      [2] Klasör seç → otomatik toplu atama
+      [2] Klasör seç   → otomatik toplu atama
 
     Döner: güncellenmiş bindings dict, iptal → None.
     """
     from ui import STRINGS
-    s = STRINGS.get(lang, STRINGS["en"])
-
+    s       = STRINGS.get(lang, STRINGS["en"])
     use_gui = _has_tkinter()
 
-    print("\n" + "─" * 50)
-    print("  Ses Atama Modu / Sound Binding Mode")
-    print("─" * 50)
-    print("  [1] Tek dosya seç  (.wav)")
-    print("  [2] Klasör seç    (otomatik toplu atama)")
-    print("  [0] İptal")
-    print("─" * 50)
+    print("\n" + "─" * 52)
+    print(f"  {s['mapper_mode_title']}")
+    print("─" * 52)
+    print(f"  {s['mapper_single']}")
+    print(f"  {s['mapper_folder']}")
+    print(f"  {s['mapper_cancel_opt']}")
+    print("─" * 52)
 
-    choice = input("  Seçim / Choice (0/1/2): ").strip()
+    choice = input(f"  {s['mapper_choice']}").strip()
 
     if choice == "0" or choice == "":
         return None
@@ -393,11 +333,10 @@ def interactive_custom_flow(
             print(f"\n  {s['custom_cancel']}")
             return None
 
-        # Dosya adından tuş tahmini
         guessed = guess_key_from_filename(wav_path)
         if guessed:
-            print(f"\n  Dosya adından tahmin: {wav_path.name}  →  [{guessed}]")
-            confirm = input("  Onayla / Confirm? (Enter=Evet, n=Hayır): ").strip().lower()
+            print(f"\n  {s['mapper_guess_found']}: {wav_path.name}  →  [{guessed}]")
+            confirm = input(f"  {s['mapper_confirm_guess']}").strip().lower()
             if confirm != "n":
                 new_bindings[guessed] = str(wav_path)
                 print(f"\n  ✔ {wav_path.name} → {guessed}")
@@ -414,29 +353,29 @@ def interactive_custom_flow(
         print(f"\n  ✔ {wav_path.name} → {captured}")
         return new_bindings
 
-    # ── MOD 2: Klasör Otomatik Tarama ────────────────────────
+    # ── MOD 2: Klasör Otomatik Tarama ─────────────────────────
     if choice == "2":
-        folder = _pick_folder(use_gui)
+        folder = _pick_folder(use_gui, s)
         if not folder:
             print(f"\n  {s['custom_cancel']}")
             return None
 
-        print(f"\n  Taranıyor: {folder}")
+        print(f"\n  {s['mapper_scanning']}: {folder}")
         result = scan_folder(folder)
 
         if result.total == 0:
-            print("  [!] Bu klasörde .wav dosyası bulunamadı.")
+            print(f"  [!] {s['mapper_no_wav']}")
             return None
 
-        print(result.summary())
+        print(result.summary(s))
 
         if not result.matched:
-            print("\n  [!] Hiçbir dosya tanınan bir tuş adıyla eşleşmedi.")
-            print("      Dosya adlarını şu şekilde düzenleyin: space.wav, enter.wav, a.wav ...")
+            print(f"\n  [!] {s['mapper_no_match']}")
+            print(f"      {s['mapper_no_match_hint']}")
             return None
 
-        print("\n" + "─" * 50)
-        confirm = input("  Bunları kaydet? / Save these? (Enter=Evet, n=Hayır): ").strip().lower()
+        print("\n" + "─" * 52)
+        confirm = input(f"  {s['mapper_confirm_save']}").strip().lower()
         if confirm == "n":
             print(f"  {s['custom_cancel']}")
             return None
@@ -444,7 +383,8 @@ def interactive_custom_flow(
         for key_id, wav_path in result.matched.items():
             new_bindings[key_id] = str(wav_path)
 
-        print(f"\n  ✔ {len(result.matched)} ses atandı.")
+        n = len(result.matched)
+        print(f"\n  ✔ {n} {s['mapper_saved_n']}.")
         return new_bindings
 
     return None
@@ -454,18 +394,17 @@ def interactive_custom_flow(
 #  YARDIMCI: DOSYA / KLASÖR SEÇİMİ (GUI + fallback)
 # ─────────────────────────────────────────────────────────────
 def _pick_single_wav(use_gui: bool, s: dict) -> Optional[Path]:
-    """GUI varsa dosya seçici aç, yoksa manuel yol al."""
     if use_gui:
-        print("  [Dosya seçici pencere açılıyor / File picker opening...]")
-        path = pick_file_gui("WAV dosyası seçin / Select WAV file")
+        print(f"  [{s['mapper_opening_file']}]")
+        path = pick_file_gui(s["mapper_mode_title"])
         if path and path.exists() and path.suffix.lower() == ".wav":
             return path
         if path:
             print(f"  [!] {s['custom_error']}")
             return None
-        # Pencereyi kapattıysa manuel dene
-    print(f"\n  {s['custom_enter_path']}")
-    raw = input("  Yol/Path: ").strip().strip('"').strip("'")
+
+    print(f"\n  {s['mapper_path_prompt']}")
+    raw = input("  > ").strip().strip('"').strip("'")
     if not raw:
         return None
     p = Path(raw)
@@ -475,22 +414,22 @@ def _pick_single_wav(use_gui: bool, s: dict) -> Optional[Path]:
     return None
 
 
-def _pick_folder(use_gui: bool) -> Optional[Path]:
-    """GUI varsa klasör seçici aç, yoksa manuel yol al."""
+def _pick_folder(use_gui: bool, s: dict) -> Optional[Path]:
     if use_gui:
-        print("  [Klasör seçici pencere açılıyor / Folder picker opening...]")
-        path = pick_folder_gui("Ses klasörünü seçin / Select sound folder")
+        print(f"  [{s['mapper_opening_folder']}]")
+        path = pick_folder_gui(s["mapper_mode_title"])
         if path and path.is_dir():
             return path
         if path:
-            print("  [!] Geçersiz klasör.")
+            print(f"  [!] {s['mapper_invalid_folder']}")
             return None
-    print("\n  Klasör yolunu girin / Enter folder path:")
-    raw = input("  Yol/Path: ").strip().strip('"').strip("'")
+
+    print(f"\n  {s['mapper_folder_prompt']}")
+    raw = input("  > ").strip().strip('"').strip("'")
     if not raw:
         return None
     p = Path(raw)
     if p.is_dir():
         return p
-    print("  [!] Klasör bulunamadı.")
+    print(f"  [!] {s['mapper_folder_nf']}")
     return None
