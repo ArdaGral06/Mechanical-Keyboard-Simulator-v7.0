@@ -1,15 +1,10 @@
 """
-input_handler.py — Klavye / Fare Dinleyici Katmanı
-====================================================
-Bu modül YALNIZCA input eventlerini yakalar ve AudioEngine'e iletir.
-pygame.mixer veya herhangi bir ses işlemi YAPILMAZ.
-
-Sorumluluklar:
-  • Klavye tuş basma/bırakma olaylarını dinle
-  • Fare tıklama olaylarını dinle
-  • is_customizing bayrağına göre sesi engelle
-  • Basılı tutulan tuşları takip et (repeat_mode için)
-  • Tuş adını normalize et (KeyCode.char → lower, Key.space → "Key.space")
+input_handler.py — Klavye / Fare Dinleyici Katmanı v2.1 (RAM Optimized)
+========================================================================
+RAM optimizasyonları:
+  1. pressed_keys watchdog — set >_MAX_PRESSED olursa auto-clear
+     (focus kaybında release event kaçarsa set sonsuza büyüyebilirdi)
+  2. _MAX_PRESSED = 30 → gerçek klavyede aynı anda 30+ tuş basılmaz
 """
 
 from __future__ import annotations
@@ -22,18 +17,15 @@ from pynput import keyboard, mouse
 
 log = logging.getLogger("KeySim.Input")
 
+# OPT: pressed_keys için üst sınır — focus kaybında release kaçarsa
+# set büyümeye devam ederdi. 30 tuş aynı anda basılması fiziksel imkânsız.
+_MAX_PRESSED = 30
+
 
 # ─────────────────────────────────────────────────────────────
 #  KEY NAME NORMALİZASYONU
 # ─────────────────────────────────────────────────────────────
 def normalize_key_name(key: keyboard.Key | keyboard.KeyCode) -> Optional[str]:
-    """
-    pynput Key nesnesini tutarlı string'e dönüştür.
-    
-    KeyCode (normal karakter) → key.char.lower()   → "a", "1", "ş" ...
-    Key (özel tuş)            → str(key)            → "Key.space", "Key.enter" ...
-    Geçersiz                  → None
-    """
     try:
         if isinstance(key, keyboard.KeyCode) and key.char:
             return key.char.lower()
@@ -44,7 +36,6 @@ def normalize_key_name(key: keyboard.Key | keyboard.KeyCode) -> Optional[str]:
 
 
 def normalize_button_name(button: mouse.Button) -> str:
-    """Mouse.Button → string. Örn: Button.left → "Button.left" """
     return str(button)
 
 
@@ -55,44 +46,30 @@ class InputHandler:
     """
     Klavye ve fare giriş dinleyicisi.
 
-    Tasarım ilkesi: 'Sadece üret, asla tüketme.'
-      Listener callback'leri yalnızca engine.enqueue_play() çağırır.
-      Ses çalma, DSP, mixer — hiçbiri bu sınıfın sorumluluğunda değil.
-
-    Kullanım:
-      handler = InputHandler(engine=..., state=...)
-      handler.start()
-      ...
-      handler.stop()
+    enqueue_fn imzası: (key_id: str, is_mouse: bool, is_release: bool) → None
     """
 
     def __init__(
         self,
-        enqueue_fn     : Callable[[str, bool], None],
-        pressed_keys   : Set[str],
-        get_customizing: Callable[[], bool],
-        get_repeat     : Callable[[], bool],
-        get_running    : Callable[[], bool],
+        enqueue_fn      : Callable[[str, bool, bool], None],
+        pressed_keys    : Set[str],
+        get_customizing : Callable[[], bool],
+        get_repeat      : Callable[[], bool],
+        get_running     : Callable[[], bool],
+        get_release     : Callable[[], bool] = lambda: True,
     ) -> None:
-        """
-        enqueue_fn      : AudioEngine.enqueue_play — ses çalma isteği
-        pressed_keys    : shared set — basılı tutulan tuşları izler
-        get_customizing : bool dönen callable — tuş yakalanırken ses engelle
-        get_repeat      : bool dönen callable — repeat mode durumu
-        get_running     : bool dönen callable — uygulama hâlâ çalışıyor mu
-        """
         self._enqueue      = enqueue_fn
         self._pressed      = pressed_keys
         self._customizing  = get_customizing
         self._repeat       = get_repeat
         self._running      = get_running
+        self._release      = get_release
 
         self._kb_listener  : Optional[keyboard.Listener] = None
         self._ms_listener  : Optional[mouse.Listener]    = None
         self._thread       : Optional[threading.Thread]  = None
 
     def start(self) -> None:
-        """Arka plan thread'inde dinleyicileri başlat."""
         self._thread = threading.Thread(
             target=self._listen_loop, name="InputHandler", daemon=True
         )
@@ -100,43 +77,57 @@ class InputHandler:
         log.info("InputHandler started.")
 
     def stop(self) -> None:
-        """Dinleyicileri durdur."""
         if self._kb_listener:
             self._kb_listener.stop()
         if self._ms_listener:
             self._ms_listener.stop()
+        # OPT: set içeriğini temizle — thread durduğunda stale state kalmasın
+        self._pressed.clear()
         log.info("InputHandler stopped.")
 
     # ── PRIVATE ────────────────────────────────────────────────
 
     def _listen_loop(self) -> None:
-        """Keyboard + Mouse listener'ları başlat ve join et."""
 
         def on_press(key: keyboard.Key | keyboard.KeyCode) -> Optional[bool]:
             if not self._running():
                 return False
             if self._customizing():
-                return None  # özelleştirme modunda sessiz
+                return None
 
             name = normalize_key_name(key)
             if not name:
                 return None
 
-            # Repeat mode kapalıysa ve tuş zaten basılıysa → ses çalma
             if not self._repeat() and name in self._pressed:
                 return None
 
+            # OPT: Watchdog — set sınırı aşıldıysa stale state var demek;
+            # temizle ve devam et. Normal kullanımda hiç tetiklenmez.
+            if len(self._pressed) >= _MAX_PRESSED:
+                log.warning("pressed_keys overflow (%d), clearing stale state",
+                            len(self._pressed))
+                self._pressed.clear()
+
             self._pressed.add(name)
             try:
-                self._enqueue(name, False)
+                self._enqueue(name, False, False)
             except Exception as exc:
                 log.debug("on_press enqueue error: %s", exc)
             return None
 
         def on_release(key: keyboard.Key | keyboard.KeyCode) -> None:
             name = normalize_key_name(key)
-            if name:
-                self._pressed.discard(name)
+            if not name:
+                return
+            was_pressed = name in self._pressed
+            self._pressed.discard(name)
+
+            if was_pressed and self._release() and not self._customizing():
+                try:
+                    self._enqueue(name, False, True)
+                except Exception as exc:
+                    log.debug("on_release enqueue error: %s", exc)
 
         def on_click(
             x: int, y: int,
@@ -150,7 +141,7 @@ class InputHandler:
             if pressed:
                 name = normalize_button_name(button)
                 try:
-                    self._enqueue(name, True)
+                    self._enqueue(name, True, False)
                 except Exception as exc:
                     log.debug("on_click enqueue error: %s", exc)
             return None
@@ -167,22 +158,19 @@ class InputHandler:
             self._kb_listener.join()
             self._ms_listener.join()
 
+        # OPT: listener kapandığında referansları serbest bırak
+        self._kb_listener = None
+        self._ms_listener = None
+
 
 # ─────────────────────────────────────────────────────────────
 #  TEK TUŞ YAKALAMA (Özelleştirme için)
 # ─────────────────────────────────────────────────────────────
 class SingleKeyCapture:
-    """
-    Kullanıcının bastığı tek tuş veya fare butonunu yakalar.
-    Özelleştirme (custom binding) işleminde kullanılır.
-
-    Kullanım:
-      capture = SingleKeyCapture()
-      key_name = capture.wait(timeout=30.0)
-    """
+    __slots__ = ("_result", "_event")
 
     def __init__(self) -> None:
-        self._result : Optional[str]   = None
+        self._result : Optional[str] = None
         self._event  = threading.Event()
 
     def wait(self, timeout: float = 30.0) -> Optional[str]:
