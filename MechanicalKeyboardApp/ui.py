@@ -1,21 +1,34 @@
 """
-ui.py — Terminal Arayüz Katmanı
-=================================
-Tüm ekran çıktısı bu modülde merkezi olarak yönetilir.
-Engine, input, main katmanları bu modülü çağırır; bu modül onları çağırmaz.
+ui.py — Terminal Arayüz Katmanı v2.1 (RAM Optimized)
+======================================================
+RAM optimizasyonları:
+  1. _HR, _W module-level sabitler — her frame'de "═"*58 yeniden yaratılmıyor
+  2. _BAR_FULL, _BAR_EMPTY sabitler — string allocation başına sıfır
+  3. update_ui içinde yeniden kullanılan string sabitler tek yerde
 """
 
 from __future__ import annotations
 
 import os
-from typing import Any, Dict
+from typing import Dict
+
+# ─────────────────────────────────────────────────────────────
+#  MODULE-LEVEL SABİTLER
+#  OPT: Bu stringler update_ui() her çağrıldığında (~her saniye) yeniden
+#  yaratılıyordu. Module-level sabit → tek allocation, sıfır GC baskısı.
+# ─────────────────────────────────────────────────────────────
+_W   : int = 58
+_HR  : str = "═" * _W          # "═"*58 her frame yeniden yaratılmıyacak
+_TOP : str = f" ╔{_HR}╗"
+_MID : str = f" ╠{_HR}╣"
+_BOT : str = f" ╚{_HR}╝"
+_ROW_W = _W + 2                  # _row() width parametresi sabiti
 
 # ─────────────────────────────────────────────────────────────
 #  DİL METİNLERİ
 # ─────────────────────────────────────────────────────────────
 STRINGS: Dict[str, Dict[str, str]] = {
     "tr": {
-        # ── Ana arayüz ───────────────────────────────────────
         "title"              : "MEKANİK KLAVYE SİMÜLATÖRÜ v7.0",
         "subtitle"           : "Thread-Safe · Zero-Latency · Professional",
         "vol"                : "SES",
@@ -45,8 +58,6 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "rep_off"            : "Tekrar: KAPALI",
         "reloading"          : "Yeniden yükleniyor...",
         "lang_prompt"        : "Dil / Language (tr/en): ",
-
-        # ── Ses atama (sound_mapper) ──────────────────────────
         "mapper_mode_title"  : "Ses Atama Modu",
         "mapper_single"      : "[1] Tek dosya seç  (.wav)",
         "mapper_folder"      : "[2] Klasör seç    (otomatik toplu atama)",
@@ -73,7 +84,6 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "mapper_folder_nf"   : "Klasör bulunamadı.",
     },
     "en": {
-        # ── Main UI ───────────────────────────────────────────
         "title"              : "MECHANICAL KEYBOARD SIMULATOR v7.0",
         "subtitle"           : "Thread-Safe · Zero-Latency · Professional",
         "vol"                : "VOLUME",
@@ -103,8 +113,6 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "rep_off"            : "Repeat: OFF",
         "reloading"          : "Reloading...",
         "lang_prompt"        : "Dil / Language (tr/en): ",
-
-        # ── Sound binding (sound_mapper) ──────────────────────
         "mapper_mode_title"  : "Sound Binding Mode",
         "mapper_single"      : "[1] Select single file  (.wav)",
         "mapper_folder"      : "[2] Select folder       (auto bulk assign)",
@@ -142,13 +150,12 @@ def clear_screen() -> None:
 
 def _bar(value: float, length: int = 20,
          full: str = "█", empty: str = "░") -> str:
-    """Yüzde değerinden ASCII progress bar oluştur."""
     n = max(0, min(length, int(length * value)))
     return full * n + empty * (length - n)
 
 
-def _row(text: str, width: int) -> str:
-    """Kenarları çizgili, belirtilen genişlikte tablo satırı."""
+def _row(text: str, width: int = _ROW_W) -> str:
+    # OPT: width varsayılan değer sabit — her çağrıda argüman geçmek gerekmez
     return f" ║ {text:<{width - 2}} ║"
 
 
@@ -164,11 +171,6 @@ def update_ui(
     last_action   : str,
     notification  : str = "",
 ) -> None:
-    """
-    Terminal ekranını tamamen yeniden çizer.
-
-    Tüm durum bilgisi parametre olarak geçilir — global state erişimi yok.
-    """
     clear_screen()
     s = STRINGS.get(lang, STRINGS["en"])
 
@@ -178,24 +180,22 @@ def update_ui(
     rep_str   = s["rep_on"] if repeat_mode else s["rep_off"]
     act_str   = last_action if last_action else s["waiting"]
 
-    W  = 58
-    hr = "═" * W
-
+    # OPT: _TOP, _MID, _BOT, _HR module-level sabitler — sıfır allocation her frame
     print("\n")
-    print(f" ╔{hr}╗")
-    print(f" ║ {s['title']:^{W}} ║")
-    print(f" ║ {s['subtitle']:^{W}} ║")
-    print(f" ╠{hr}╣")
-    print(_row(f"🔊 {s['vol']:<12}: {vp:>3}%  [{vol_bar}]",        W + 2))
-    print(_row(f"🎹 {s['poly']:<12}: {active_voices:>2}/{polyphony}  [{voice_bar}]", W + 2))
-    print(_row(f"🔄 {rep_str}",                                     W + 2))
-    print(f" ╠{hr}╣")
-    print(_row(f"⚡ {s['last']:<12}: {act_str[:W - 18]}",            W + 2))
-    print(f" ╠{hr}╣")
-    print(_row(f"[ {s['cmds']} ]",                                  W + 2))
+    print(_TOP)
+    print(f" ║ {s['title']:^{_W}} ║")
+    print(f" ║ {s['subtitle']:^{_W}} ║")
+    print(_MID)
+    print(_row(f"🔊 {s['vol']:<12}: {vp:>3}%  [{vol_bar}]"))
+    print(_row(f"🎹 {s['poly']:<12}: {active_voices:>2}/{polyphony}  [{voice_bar}]"))
+    print(_row(f"🔄 {rep_str}"))
+    print(_MID)
+    print(_row(f"⚡ {s['last']:<12}: {act_str[:_W - 18]}"))
+    print(_MID)
+    print(_row(f"[ {s['cmds']} ]"))
     for key in ("cmd_vol", "cmd_custom", "cmd_repeat", "cmd_mute", "cmd_exit"):
-        print(_row(f"  {s[key]}",                                   W + 2))
-    print(f" ╚{hr}╝")
+        print(_row(f"  {s[key]}"))
+    print(_BOT)
 
     if notification:
         print(f"\n  ▶ {notification}")
@@ -207,7 +207,6 @@ def update_ui(
 #  DİL SEÇİMİ
 # ─────────────────────────────────────────────────────────────
 def select_language() -> str:
-    """Başlangıçta dil seçtir. 'tr' veya 'en' döner."""
     clear_screen()
     print("\n  ╔══════════════════════════════════════╗")
     print("  ║  MECHANICAL KEYBOARD SIMULATOR v7.0  ║")
