@@ -29,9 +29,10 @@ from pathlib import Path
 from typing import Optional
 
 # ── Proje modülleri ──────────────────────────────────────────────────────────
-from engine       import AudioEngine
+from engine        import AudioEngine
 from input_handler import InputHandler, SingleKeyCapture
-from ui           import STRINGS, select_language, update_ui
+from ui            import STRINGS, select_language, update_ui
+from sound_mapper  import interactive_custom_flow
 
 # ─────────────────────────────────────────────────────────────
 #  LOGLAMA KURULUMU (diğer modüller import etmeden önce)
@@ -65,15 +66,23 @@ def _load_json(path: Path, what: str) -> dict:
 
 
 def _load_bindings(cfg: dict) -> dict:
-    """key_bindings.json yükle. Yoksa boş dict döndür."""
+    """
+    key_bindings.json yükle.
+    Dosya yoksa, boşsa (0 byte) veya bozuksa boş dict döndür.
+    """
     path = Path(cfg["bindings_file"])
-    if path.exists():
-        try:
-            with open(path, encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as exc:
-            log.error("Bindings load error: %s", exc)
-    return {}
+    if not path.exists() or path.stat().st_size == 0:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, ValueError) as exc:
+        log.warning("Bindings file malformed, starting fresh. (%s)", exc)
+        return {}
+    except Exception as exc:
+        log.error("Bindings load error: %s", exc)
+        return {}
 
 
 def _save_bindings(cfg: dict, bindings: dict) -> None:
@@ -133,29 +142,21 @@ def handle_command(
     # ── ÖZELLEŞTİRME ───────────────────────────────────────
     if cmd in ("c", "custom", "özelleştir"):
         state.is_customizing = True
-        print(f"\n  {s['custom_enter_path']}")
-        path = input("  Yol/Path: ").strip().strip('"').strip("'")
-
-        if os.path.isfile(path) and path.lower().endswith(".wav"):
-            print(f"\n  {s['custom_press_key']}")
-            capture = SingleKeyCapture()
-            key     = capture.wait(timeout=30.0)
-
-            if key:
-                state.bindings[key] = path
-                _save_bindings(cfg, state.bindings)
-                engine._key_bindings = state.bindings   # engine'e güncelle
-                print(f"\n  {s['reloading']}")
-                engine.reload_sounds()
-                state.last_action = f"Bound: {key}"
-                state.is_customizing = False
-                return f"{s['custom_success']} ({key})"
-            else:
-                state.is_customizing = False
-                return s["custom_cancel"]
-        else:
+        new_bindings = interactive_custom_flow(
+            lang             = state.lang,
+            current_bindings = state.bindings,
+        )
+        if new_bindings is not None:
+            state.bindings = new_bindings
+            _save_bindings(cfg, state.bindings)
+            engine._key_bindings = state.bindings
+            print(f"\n  {s['reloading']}")
+            engine.reload_sounds()
+            state.last_action = f"Bound: {len(new_bindings)} ses"
             state.is_customizing = False
-            return s["custom_error"]
+            return s["custom_success"]
+        state.is_customizing = False
+        return s["custom_cancel"]
 
     # ── TEKRAR MODU ─────────────────────────────────────────
     if cmd in ("r", "repeat", "tekrar"):
