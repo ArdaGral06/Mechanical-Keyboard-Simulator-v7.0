@@ -1,34 +1,102 @@
 {
-    "_comment": "DSP Preset tanımları. Kod = engine, ayar = data. Pitch/bas/presence/reverb değerlerini buradan düzenleyin.",
+    "_comment": "Audiophile Edition v2.0 — Gerçekçi mekanik klavye akustiği. Kod = engine, ayar = data.",
+    "_version": "2.0",
 
-    "highpass_fc_hz": 60.0,
+    "highpass_fc_hz": 80.0,
+
+    "wpm": {
+        "_desc": "WPM duyarlılığı — 2 hız katmanı (yavaş/hızlı). Hızlı yazımda ses hafifçe tizleşir ve reverb kısalır.",
+        "fast_threshold_wpm"  : 55,
+        "measurement_window"  : 15,
+        "fast_pitch_add"      : 0.022,
+        "fast_reverb_decay_scale": 0.72
+    },
 
     "normal_key": {
-        "_desc"    : "Alfanümerik tuşlar — doğal TIK sesi",
-        "pitch"    : { "min": 0.92, "range": 0.16 },
+        "_desc": "Alfanümerik tuşlar — Cherry MX tarzı net TIK. Presence 3.4kHz ile berraklık, kısa body resonance.",
+        "pitch"  : { "min": 0.935, "range": 0.155 },
+        "random_pitch_range" : 0.012,
+        "random_volume_range": 0.055,
         "bass_db"  : 0.0,
         "bass_fc"  : 350.0,
-        "presence" : { "db_min": 1.5, "db_range": 1.5, "fc": 2200.0 },
-        "reverb"   : { "decay_min": 0.05, "decay_range": 0.08,
-                       "delay_min": 0.004, "delay_range": 0.006 }
+        "presence" : { "db_min": 2.8, "db_range": 2.0, "fc": 3400.0 },
+        "reverb"   : {
+            "decay_min"  : 0.038, "decay_range" : 0.065,
+            "delay_min"  : 0.003, "delay_range" : 0.0045
+        },
+        "release": {
+            "_desc"           : "Tuş bırakma — spring bounce sesi: tiz, ince, kısa",
+            "enabled"         : true,
+            "pitch_semitones" : 4.0,
+            "highpass_fc_hz"  : 340.0,
+            "volume_scale"    : 0.26,
+            "reverb_decay"    : 0.020,
+            "reverb_delay_s"  : 0.0025,
+            "random_pitch_range": 0.018
+        }
     },
 
     "heavy_key": {
-        "_desc"    : "Büyük tuşlar (Space/Enter/BS/Shift…) — derin THUNK sesi",
-        "pitch"    : { "min": 0.70, "range": 0.12 },
-        "bass"     : { "db_min": 6.0, "db_range": 4.0,
-                       "fc_min": 260.0, "fc_range": 140.0 },
-        "presence" : { "db_min": 0.0, "db_range": 0.0, "fc": 2200.0 },
-        "reverb"   : { "decay_min": 0.16, "decay_range": 0.14,
-                       "delay_min": 0.012, "delay_range": 0.009 }
+        "_desc": "Büyük tuşlar (Space/Enter/BS/Shift) — Stabilizatörlü, derin THOCK. Kasa boşluğu rezonansı 170Hz.",
+        "pitch"  : { "min": 0.670, "range": 0.125 },
+        "random_pitch_range" : 0.010,
+        "random_volume_range": 0.065,
+        "bass"   : {
+            "db_min"  : 6.5, "db_range"  : 4.0,
+            "fc_min"  : 155.0, "fc_range": 55.0
+        },
+        "presence" : { "db_min": 0.5, "db_range": 0.8, "fc": 2800.0 },
+        "reverb"   : {
+            "decay_min"  : 0.145, "decay_range" : 0.145,
+            "delay_min"  : 0.011, "delay_range" : 0.009
+        },
+        "release": {
+            "_desc"           : "Büyük tuş bırakma — daha yumuşak spring sesi",
+            "enabled"         : true,
+            "pitch_semitones" : 3.5,
+            "highpass_fc_hz"  : 240.0,
+            "volume_scale"    : 0.21,
+            "reverb_decay"    : 0.030,
+            "reverb_delay_s"  : 0.004,
+            "random_pitch_range": 0.014
+        }
     },
 
     "mouse_click": {
-        "_desc"    : "Fare tıklaması — hafif bas, kısa kuyruk",
-        "pitch"    : { "min": 0.88, "range": 0.18 },
-        "bass"     : { "db_min": 2.0, "db_range": 2.0, "fc_min": 380.0, "fc_range": 0.0 },
-        "presence" : { "db_min": 0.0, "db_range": 0.0, "fc": 2200.0 },
-        "reverb"   : { "decay_min": 0.07, "decay_range": 0.08,
-                       "delay_min": 0.005, "delay_range": 0.006 }
+        "_desc": "Sol/Sağ fare tıklaması — optik mekanizma: tamamen tiz, sıfır bas, kısa kuyruk.",
+        "pitch"  : { "min": 0.915, "range": 0.185 },
+        "random_pitch_range" : 0.020,
+        "random_volume_range": 0.060,
+        "highpass_override_fc": 880.0,
+        "bass_db"  : 0.0,
+        "bass_fc"  : 350.0,
+        "presence" : { "db_min": 3.0, "db_range": 1.5, "fc": 4200.0 },
+        "reverb"   : {
+            "decay_min"  : 0.018, "decay_range" : 0.030,
+            "delay_min"  : 0.002, "delay_range" : 0.003
+        },
+        "release": {
+            "enabled": false
+        }
+    },
+
+    "mouse_button3": {
+        "_desc": "Orta tuş (scroll wheel click) — sert plastik mekanizma: derin, metalik, diğer fare seslerinden kalın.",
+        "pitch"  : { "min": 0.680, "range": 0.145 },
+        "random_pitch_range" : 0.016,
+        "random_volume_range": 0.055,
+        "highpass_override_fc": 80.0,
+        "bass"   : {
+            "db_min"  : 4.5, "db_range"  : 2.5,
+            "fc_min"  : 210.0, "fc_range": 40.0
+        },
+        "presence" : { "db_min": 1.0, "db_range": 1.0, "fc": 2200.0 },
+        "reverb"   : {
+            "decay_min"  : 0.055, "decay_range" : 0.060,
+            "delay_min"  : 0.006, "delay_range" : 0.005
+        },
+        "release": {
+            "enabled": false
+        }
     }
 }
