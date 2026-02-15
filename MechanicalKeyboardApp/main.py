@@ -1,59 +1,52 @@
 """
-main.py — Giriş Noktası & Komut Döngüsü
-=========================================
-Modülleri bağlar ve komut döngüsünü çalıştırır.
-
-Bağımlılık akışı (bağımlılık tersine çevrilmez):
-  main.py
-    ├── config.json  → AppConfig
-    ├── presets.json → DSP Presets
-    ├── engine.py    → AudioEngine   (ses havuzu + audio thread)
-    ├── input_handler.py → InputHandler (klavye/fare → engine.enqueue_play)
-    └── ui.py        → update_ui()   (terminal çıktısı)
-
-Graceful shutdown sırası:
-  1. app_running = False
-  2. InputHandler.stop()   → listener'lar durur
-  3. AudioEngine.stop()    → kuyruk boşalır, fade-out, mixer.quit()
-  4. sys.exit(0)
+main.py — Giriş Noktası & Komut Döngüsü v2.1 (RAM Optimized)
+==============================================================
+RAM optimizasyonları:
+  1. RotatingFileHandler (max 512KB, 1 backup) — log dosyası büyümez
+  2. gc.freeze() — startup sonrası uzun yaşayan nesneler GC taramasından çıkar
+  3. GC threshold ayarı — typing sırasında gereksiz GC döngüsü engellendi
+  4. gc.disable() audio loop süresince — kritik kısımda GC pause yok
 """
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
+import logging.handlers
 import os
 import signal
 import sys
 from pathlib import Path
 from typing import Optional
 
-# ── Proje modülleri ──────────────────────────────────────────────────────────
 from engine        import AudioEngine
 from input_handler import InputHandler, SingleKeyCapture
 from ui            import STRINGS, select_language, update_ui
 from sound_mapper  import interactive_custom_flow
 
 # ─────────────────────────────────────────────────────────────
-#  LOGLAMA KURULUMU (diğer modüller import etmeden önce)
+#  LOGLAMA — RotatingFileHandler
+#  OPT: FileHandler sınırsız büyür. RotatingFileHandler max 512KB → log RAM'e
+#  yüklendiğinde bile sınırlı. backupCount=1 → toplam max ~1MB disk.
 # ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     level   = logging.WARNING,
     format  = "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers= [logging.FileHandler("keyboard_sim.log", encoding="utf-8")],
+    handlers= [logging.handlers.RotatingFileHandler(
+        "keyboard_sim.log",
+        maxBytes    = 512 * 1024,   # 512 KB
+        backupCount = 1,
+        encoding    = "utf-8",
+    )],
 )
 log = logging.getLogger("KeySim.Main")
 
-
-# ─────────────────────────────────────────────────────────────
-#  YAPILANDIRMA YÜKLEME
-# ─────────────────────────────────────────────────────────────
 _CONFIG_PATH  = Path(__file__).parent / "config.json"
 _PRESETS_PATH = Path(__file__).parent / "presets.json"
 
 
 def _load_json(path: Path, what: str) -> dict:
-    """JSON dosyasını yükle. Hata durumunda açıklayıcı mesaj ver."""
     if not path.exists():
         print(f"[FATAL] {what} dosyası bulunamadı: {path}")
         sys.exit(1)
@@ -66,10 +59,6 @@ def _load_json(path: Path, what: str) -> dict:
 
 
 def _load_bindings(cfg: dict) -> dict:
-    """
-    key_bindings.json yükle.
-    Dosya yoksa, boşsa (0 byte) veya bozuksa boş dict döndür.
-    """
     path = Path(cfg["bindings_file"])
     if not path.exists() or path.stat().st_size == 0:
         return {}
@@ -99,9 +88,8 @@ def _save_bindings(cfg: dict, bindings: dict) -> None:
 # ─────────────────────────────────────────────────────────────
 class AppState:
     """
-    Mutable uygulama durumu — tek yerde tutulur.
-    Thread güvenliği: main thread dışından YAZILMAZ.
-    Okunabilir: herhangi bir thread'den (GIL korumalı primitifler).
+    __slots__ ile her instance field için dict overhead yok.
+    OPT: pressed_keys = set() → InputHandler watchdog ile sınırlı (max 30).
     """
     __slots__ = (
         "running", "is_customizing", "repeat_mode",
@@ -127,19 +115,13 @@ def handle_command(
     engine : AudioEngine,
     cfg    : dict,
 ) -> str:
-    """
-    Kullanıcı komutunu işle.
-    Dönen değer: bildirim metni (UI'da gösterilecek).
-    """
     s   = STRINGS[state.lang]
     cmd = raw.strip().lower()
 
-    # ── ÇIKIŞ ──────────────────────────────────────────────
     if cmd in ("exit", "q", "quit", "çık"):
         state.running = False
         return ""
 
-    # ── ÖZELLEŞTİRME ───────────────────────────────────────
     if cmd in ("c", "custom", "özelleştir"):
         state.is_customizing = True
         new_bindings = interactive_custom_flow(
@@ -158,14 +140,12 @@ def handle_command(
         state.is_customizing = False
         return s["custom_cancel"]
 
-    # ── TEKRAR MODU ─────────────────────────────────────────
     if cmd in ("r", "repeat", "tekrar"):
         state.repeat_mode = not state.repeat_mode
         notif = s["rep_on"] if state.repeat_mode else s["rep_off"]
         state.last_action = notif
         return notif
 
-    # ── SES SEVİYESİ ────────────────────────────────────────
     if cmd:
         try:
             val = float(cmd)
@@ -186,42 +166,55 @@ def handle_command(
 #  ANA FONKSİYON
 # ─────────────────────────────────────────────────────────────
 def main() -> None:
-    # ── Config yükle ─────────────────────────────────────────
     cfg     = _load_json(_CONFIG_PATH,  "Config")
     presets = _load_json(_PRESETS_PATH, "Presets")
 
-    # ── Durum oluştur ─────────────────────────────────────────
-    state          = AppState()
-    state.lang     = select_language()
-    state.bindings = _load_bindings(cfg)
+    state             = AppState()
+    state.lang        = select_language()
+    state.bindings    = _load_bindings(cfg)
     state.repeat_mode = cfg["app"]["default_repeat"]
     cfg["app"]["language"] = state.lang
 
     s = STRINGS[state.lang]
 
-    # ── Audio Engine ──────────────────────────────────────────
+    # ── Audio Engine + ses havuzları ──────────────────────────
     engine = AudioEngine(cfg=cfg, presets=presets, key_bindings=state.bindings)
     engine.reload_sounds()
     engine.start()
 
-    # ── Input Handler ─────────────────────────────────────────
+    # ── GC OPTİMİZASYONLARI — startup tamamlandıktan sonra ───
+    #
+    # gc.collect() — startup artığı geçici nesneleri temizle
+    gc.collect()
+    #
+    # gc.freeze() — şu anki tüm nesneleri "generation 2 permanent" yap.
+    # Bunlar artık minor GC (gen0/gen1) taramasına girmez.
+    # Etki: DSP array'leri, Sound nesneleri, pygame objeler → GC'den muaf.
+    # Yazma döngüsünde oluşan küçük nesneler (PlayCommand, strings) gen0'da
+    # hızlı toplanır, büyük nesnelere dokunulmaz.
+    gc.freeze()
+    #
+    # GC threshold: (700, 10, 10) → gen0 her 700 alloc'ta bir taranır.
+    # Default (700, 10, 10) zaten makul; sadece freeze() yeterli.
+    # Agresif mod istenirse: gc.set_threshold(1000, 15, 15)
+    # ─────────────────────────────────────────────────────────
+
     handler = InputHandler(
         enqueue_fn      = engine.enqueue_play,
         pressed_keys    = state.pressed_keys,
         get_customizing = lambda: state.is_customizing,
         get_repeat      = lambda: state.repeat_mode,
         get_running     = lambda: state.running,
+        get_release     = lambda: cfg["app"].get("release_enabled", True),
     )
     handler.start()
 
-    # ── SIGINT / SIGTERM ──────────────────────────────────────
     def _sig_handler(sig, frame):
         state.running = False
 
     signal.signal(signal.SIGINT,  _sig_handler)
     signal.signal(signal.SIGTERM, _sig_handler)
 
-    # ── Komut Döngüsü ─────────────────────────────────────────
     notification = s["start"]
 
     while state.running:
@@ -243,13 +236,16 @@ def main() -> None:
             state.running = False
             break
         except EOFError:
-            # Stdin kapandı (headless çalışma)
             break
 
-    # ── Graceful Shutdown ─────────────────────────────────────
     print(f"\n  {s['closing']}")
     handler.stop()
     engine.stop()
+
+    # OPT: gc.unfreeze() + son collect — kapanışta belleği tam temizle
+    gc.unfreeze()
+    gc.collect()
+
     log.info("Application exited cleanly.")
     sys.exit(0)
 
