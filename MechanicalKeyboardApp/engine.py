@@ -1,15 +1,15 @@
 """
-engine.py — Audio Engine Katmanı
-==================================
-Tüm pygame.mixer çağrıları YALNIZCA bu modüldeki _audio_loop() thread'inde yapılır.
-Dışarıdan erişim sadece enqueue_play() ve update_volume() üzerinden olur.
-
-Mimari:
-  InputHandler ──enqueue_play()──► SimpleQueue ──► _audio_loop() ──► pygame.mixer
-                                                         │
-                                            set_endevent + active_count()
-                                                         │
-                                               _active_voices (int, thread-safe)
+engine.py — Audio Engine Katmanı v2.1 (RAM Optimized)
+=======================================================
+RAM optimizasyonları özeti:
+  1. 8 ayrı pool listesi → self._pools[8] dizisi (getattr/setattr yok)
+  2. update_volume() artık geçici birleşik liste yaratmıyor
+  3. Voice steal → hard stop (fadeout yerine) + channel temizliği
+  4. queue.Queue(maxsize=128) → bellek birikimi engellendi
+  5. drain_end_events() → pygame.event.clear() (get() liste yaratmaz)
+  6. stop() → pool.clear() + explicit del → Sound ref'leri serbest
+  7. _last_idx dizisi → getattr/setattr string lookup kaldırıldı
+  8. gc.freeze() desteği için _pools tek merkezde tutuluyor
 """
 
 from __future__ import annotations
@@ -18,23 +18,24 @@ import gc
 import logging
 import os
 import queue
+import random
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
 
 import pygame
 import numpy as np
 
-from dsp import build_pool
+from dsp import build_pool, build_release_pool
 
 log = logging.getLogger("KeySim.Engine")
 
-
 # ─────────────────────────────────────────────────────────────
-#  AĞIR TUŞLAR — Kalın ses havuzuna yönlendirilecekler
+#  AĞIR TUŞLAR
 # ─────────────────────────────────────────────────────────────
 HEAVY_KEYS: frozenset = frozenset({
     "Key.space", "Key.enter", "Key.backspace", "Key.delete",
@@ -53,35 +54,74 @@ HEAVY_KEYS: frozenset = frozenset({
     "Key.media_play_pause","Key.media_volume_up","Key.media_volume_down",
 })
 
+MOUSE3_KEY = "Button.middle"
+
+# Pool slot sabitleri — string attribute lookup yerine int index
+# OPT: getattr/setattr yerine _pools[idx] ve _last_idx[idx] → hızlı, temiz
+_PIDX_NORMAL   = 0
+_PIDX_NORMAL_F = 1
+_PIDX_NORMAL_R = 2
+_PIDX_HEAVY    = 3
+_PIDX_HEAVY_F  = 4
+_PIDX_HEAVY_R  = 5
+_PIDX_MOUSE    = 6
+_PIDX_MOUSE3   = 7
+_N_POOLS       = 8
+
+# Queue üst sınırı — büyüyen bellek birikimini engeller
+_QUEUE_MAXSIZE = 128
+
 
 # ─────────────────────────────────────────────────────────────
-#  PLAY COMMAND — Immutable veri yapısı
+#  PLAY COMMAND
 # ─────────────────────────────────────────────────────────────
 @dataclass(frozen=True, slots=True)
 class PlayCommand:
-    """
-    InputHandler → AudioEngine arası mesaj.
-    Ses seçimi ve volume hesabı audio thread'de yapılır.
-    """
-    key_id  : str
-    is_mouse: bool = False
+    """InputHandler → AudioEngine arası immutable mesaj."""
+    key_id    : str
+    is_mouse  : bool = False
+    is_release: bool = False
 
 
 # ─────────────────────────────────────────────────────────────
-#  CHANNEL RING — Pre-allocated, tek kilit
+#  WPM TRACKER
+# ─────────────────────────────────────────────────────────────
+class WpmTracker:
+    """
+    Son N tuş basışının timestamp'larından rolling WPM hesaplar.
+    OPT: deque(maxlen=N) → sabit boyut, asla büyümez.
+    """
+    __slots__ = ("_times", "_lock", "_window")
+
+    def __init__(self, window: int = 15) -> None:
+        self._window = window
+        self._times  : Deque[float] = deque(maxlen=window)  # sabit boyut
+        self._lock   = threading.Lock()
+
+    def record(self) -> None:
+        with self._lock:
+            self._times.append(time.monotonic())
+
+    def wpm(self) -> float:
+        with self._lock:
+            if len(self._times) < 4:
+                return 0.0
+            elapsed = self._times[-1] - self._times[0]
+            if elapsed < 0.01:
+                return 0.0
+            return (len(self._times) - 1) / elapsed * 12.0
+
+
+# ─────────────────────────────────────────────────────────────
+#  CHANNEL RING
 # ─────────────────────────────────────────────────────────────
 class ChannelRing:
     """
-    Sabit boyutlu ses kanalı havuzu.
-
-    • acquire() → (channel, n_active) atomik olarak döner.
-    • Voice stealing: round-robin, en eski kanal alınır.
-    • set_endevent: her kanala benzersiz event atanır.
-      Audio loop bu eventleri temizler → pygame event queue dolmaz.
+    Pre-allocated kanal havuzu.
+    OPT: drain_end_events → pygame.event.clear() (get() gibi liste yaratmaz)
+    OPT: steal → hard stop (fadeout yerine); eski ses derhal bırakılır
     """
-
-    __slots__ = ("_n", "_channels", "_end_events", "_steal_pos",
-                 "_lock", "_fade_ms")
+    __slots__ = ("_n", "_channels", "_end_events", "_steal_pos", "_lock", "_fade_ms")
 
     def __init__(self, polyphony: int, fade_ms: int) -> None:
         self._n         = polyphony
@@ -95,63 +135,39 @@ class ChannelRing:
         self._assign_end_events()
 
     def _assign_end_events(self) -> None:
-        """
-        pygame.event.custom_type() → her kanala benzersiz event tipi.
-        Fallback: pygame.USEREVENT + offset (eski pygame sürümleri için).
-        """
         try:
             events = [pygame.event.custom_type() for _ in range(self._n)]
         except AttributeError:
             base   = getattr(pygame, "USEREVENT", 24)
             events = [base + 1 + i for i in range(self._n)]
-
         for ch, ev in zip(self._channels, events):
             ch.set_endevent(ev)
-
         self._end_events = events
-        log.debug("End events assigned: %s", events[:3])
 
     def acquire(self) -> Tuple[pygame.mixer.Channel, int]:
-        """
-        Boş kanal bul + aktif kanal sayısını döndür.
-        Tüm kanallar doluysa → round-robin voice steal (fade_ms ile).
-        """
         with self._lock:
-            active   = 0
-            free_ch  : Optional[pygame.mixer.Channel] = None
-
+            active  = 0
+            free_ch : Optional[pygame.mixer.Channel] = None
             for ch in self._channels:
                 if ch.get_busy():
                     active += 1
                 elif free_ch is None:
                     free_ch = ch
-
             if free_ch is not None:
                 return free_ch, active
-
-            # Voice stealing
+            # OPT: hard stop → anında belleği serbest bırakır, SDL buffer birikimi yok
             victim = self._channels[self._steal_pos]
-            if self._fade_ms > 0:
-                victim.fadeout(self._fade_ms)
-            else:
-                victim.stop()
+            victim.stop()                                      # ← fadeout yerine stop
             self._steal_pos = (self._steal_pos + 1) % self._n
             return victim, self._n
 
     def active_count(self) -> int:
-        """Gerçek zamanlı aktif kanal sayısı — O(POLYPHONY), doğru değer."""
         return sum(1 for ch in self._channels if ch.get_busy())
 
-    def drain_end_events(self) -> int:
-        """
-        Kanal bitiş eventlerini temizle.
-        Dönen değer: biten kanal sayısı.
-        Amaç: pygame event queue'nun dolmasını engelle.
-        """
-        total = 0
+    def drain_end_events(self) -> None:
+        # OPT: pygame.event.clear() — list() allocation yok, O(1) per event type
         for ev in self._end_events:
-            total += len(pygame.event.get(ev))
-        return total
+            pygame.event.clear(ev)
 
     def stop_all(self) -> None:
         for ch in self._channels:
@@ -165,13 +181,11 @@ class AudioEngine:
     """
     Tek audio thread üzerinde çalışan ses motoru.
 
-    Genel Bakış:
-      enqueue_play()  → PlayCommand kuyruğa eklenir, wakeup event set edilir.
-      _audio_loop()   → kuyruk drene edilir, sesler çalınır, voice count güncellenir.
-
-    Thread güvenliği:
-      pygame.mixer yalnızca _audio_loop() içinden çağrılır.
-      Dışarıdan erişim: enqueue_play(), update_volume(), active_voices property.
+    RAM optimizasyonları:
+      • self._pools[8]  — tek dizi, 8 ayrı attribute yok
+      • self._last_idx  — int dizisi, string attr lookup yok
+      • queue.Queue(maxsize=128) — sınırlı kuyruk
+      • stop() pool.clear() — Sound ref'leri erken bırakılır
     """
 
     def __init__(self, cfg: dict, presets: dict, key_bindings: dict) -> None:
@@ -179,30 +193,31 @@ class AudioEngine:
         self._presets      = presets
         self._key_bindings = key_bindings
 
-        # Ses havuzları — pygame.mixer.Sound nesneleri
-        self._normal_pool : List[pygame.mixer.Sound] = []
-        self._heavy_pool  : List[pygame.mixer.Sound] = []
-        self._mouse_pool  : List[pygame.mixer.Sound] = []
+        # OPT: 8 ayrı list attribute yerine tek dizi — Memory layout temiz,
+        #      update_volume'da geçici birleşik liste yaratılmıyor
+        self._pools    : List[List[pygame.mixer.Sound]] = [[] for _ in range(_N_POOLS)]
+        self._last_idx : List[int]                      = [-1] * _N_POOLS  # round-robin
+
         self._custom_sounds: Dict[str, pygame.mixer.Sound] = {}
+        self._pool_lock = threading.Lock()
 
-        self._last_normal  = -1
-        self._last_heavy   = -1
-        self._last_mouse   = -1
-        self._pool_lock    = threading.Lock()  # reload sırasında havuz erişimi
-
-        # Thread state
-        self._queue  : queue.SimpleQueue[PlayCommand] = queue.SimpleQueue()
+        # OPT: queue.Queue(maxsize) → dolduğunda put_nowait atar, büyümez
+        self._queue  : queue.Queue[PlayCommand] = queue.Queue(maxsize=_QUEUE_MAXSIZE)
         self._wakeup = threading.Event()
         self._running = False
         self._thread  : Optional[threading.Thread] = None
 
-        # Ses seviyesi — atomic float (GIL korumalı)
         self._volume : float = cfg["app"]["initial_volume"]
-
-        # Aktif ses sayısı — yalnızca audio thread yazar, UI thread okur
         self._active_voices : int = 0
 
-        # Mixer + Channel Ring
+        wpm_cfg          = presets.get("wpm", {})
+        self._wpm        = WpmTracker(window=wpm_cfg.get("measurement_window", 15))
+        self._wpm_thresh : float = float(wpm_cfg.get("fast_threshold_wpm", 55))
+        self._wpm_mod    : dict  = {
+            "pitch_add"          : float(wpm_cfg.get("fast_pitch_add", 0.022)),
+            "reverb_decay_scale" : float(wpm_cfg.get("fast_reverb_decay_scale", 0.72)),
+        }
+
         self._init_mixer()
         self._ring = ChannelRing(
             polyphony = cfg["engine"]["polyphony"],
@@ -212,7 +227,6 @@ class AudioEngine:
     # ── PUBLIC API ─────────────────────────────────────────────
 
     def start(self) -> None:
-        """Audio thread'i başlat."""
         if self._running:
             return
         self._running = True
@@ -223,95 +237,122 @@ class AudioEngine:
         log.info("AudioEngine started.")
 
     def stop(self) -> None:
-        """Graceful shutdown: kuyruğu boşalt, sesleri fade-out, thread'i join et."""
         if not self._running:
             return
         self._running = False
         self._wakeup.set()
-
         if self._thread:
             self._thread.join(timeout=2.0)
+            self._thread = None  # thread referansını serbest bırak
 
-        # Fade-out + stop
         pygame.mixer.fadeout(150)
         time.sleep(0.16)
         self._ring.stop_all()
         pygame.mixer.quit()
+
+        # OPT: Sound nesnelerini açıkça serbest bırak → SDL ses belleği geri döner
+        with self._pool_lock:
+            for pool in self._pools:
+                pool.clear()
+            self._custom_sounds.clear()
+
         log.info("AudioEngine stopped.")
 
-    def enqueue_play(self, key_id: str, is_mouse: bool = False) -> None:
-        """
-        Ses çalma isteği kuyruğa ekle.
-        Thread-safe: herhangi bir thread'den çağrılabilir.
-        """
-        self._queue.put(PlayCommand(key_id=key_id, is_mouse=is_mouse))
-        self._wakeup.set()
+    def enqueue_play(self, key_id: str, is_mouse: bool = False,
+                     is_release: bool = False) -> None:
+        # OPT: queue doluysa yeni event DROP edilir — bellek birikimi imkânsız
+        try:
+            self._queue.put_nowait(PlayCommand(
+                key_id=key_id, is_mouse=is_mouse, is_release=is_release
+            ))
+            self._wakeup.set()
+        except queue.Full:
+            pass  # yavaşlama anında drop — ses kaçar ama RAM güvende
 
     def update_volume(self, new_vol: float) -> None:
-        """
-        Ses seviyesini güncelle.
-        Havuzdaki tüm Sound nesnelerine uygulanır.
-        Thread-safe değildir — yalnızca main thread'den çağrılmalı.
-        """
         self._volume = max(0.0, min(1.0, new_vol))
+        # OPT: eski kod `pool_a + pool_b + ...` ile 96-elemanlı geçici liste yaratıyordu
+        #      Şimdi self._pools üzerinde doğrudan iterate — sıfır geçici allocation
         with self._pool_lock:
-            for snd in self._normal_pool + self._heavy_pool + self._mouse_pool:
-                snd.set_volume(self._volume)
+            for pool in self._pools:
+                for snd in pool:
+                    snd.set_volume(new_vol)
             for snd in self._custom_sounds.values():
-                snd.set_volume(self._volume)
+                snd.set_volume(new_vol)
 
     def reload_sounds(self) -> None:
-        """
-        Ses havuzlarını yeniden oluştur.
-        Yalnızca main thread'den, is_customizing=True iken çağrılmalı.
-        """
-        cfg = self._cfg
+        """Tüm havuzları sıfırdan oluştur. Sadece main thread'den çağrılmalı."""
+        cfg         = self._cfg
         sr          = cfg["mixer"]["sample_rate"]
         pool_size   = cfg["engine"]["pool_size"]
         norm_target = cfg["engine"]["normalize_target"]
         sound_dir   = Path(cfg["sound"]["dir"])
+        p           = self._presets
+        wpm_mod     = self._wpm_mod
+
+        # Yeni havuzlar — önceki Sound'lar sonraki with bloğuna kadar yaşıyor
+        new_pools: List[List[pygame.mixer.Sound]] = [[] for _ in range(_N_POOLS)]
 
         print("\n  ▶ Ses havuzları oluşturuluyor...")
 
-        new_normal  : List[pygame.mixer.Sound] = []
-        new_heavy   : List[pygame.mixer.Sound] = []
-        new_mouse   : List[pygame.mixer.Sound] = []
-        new_custom  : Dict[str, pygame.mixer.Sound] = {}
-
-        # ── Klavye sesleri ───────────────────────────────────
+        # ── KLAVYE ────────────────────────────────────────────
         key_path = sound_dir / cfg["sound"]["key_file"]
         if key_path.exists():
             audio, n_ch = self._load_raw(key_path)
 
-            print("   Normal keys...")
-            raw_pool = build_pool(audio, n_ch, sr, "normal_key",
-                                  self._presets, pool_size, norm_target, 42, "normal")
-            new_normal = [self._bytes_to_sound(b) for b in raw_pool]
-            del raw_pool; gc.collect()
+            print("   Normal keys (slow)...")
+            new_pools[_PIDX_NORMAL] = self._to_sounds(
+                build_pool(audio, n_ch, sr, "normal_key", p, pool_size, norm_target, 42, "normal·slow"))
 
-            print("   Heavy keys  (Space/Enter/Backspace...)...")
-            raw_pool = build_pool(audio, n_ch, sr, "heavy_key",
-                                  self._presets, pool_size, norm_target, 99, "heavy")
-            new_heavy = [self._bytes_to_sound(b) for b in raw_pool]
-            del raw_pool, audio; gc.collect()
+            print("   Normal keys (fast WPM)...")
+            new_pools[_PIDX_NORMAL_F] = self._to_sounds(
+                build_pool(audio, n_ch, sr, "normal_key", p, pool_size, norm_target, 142, "normal·fast",
+                           fast_modifier=wpm_mod))
+
+            print("   Normal keys (release)...")
+            new_pools[_PIDX_NORMAL_R] = self._to_sounds(
+                build_release_pool(audio, n_ch, sr, p["normal_key"]["release"],
+                                   pool_size, norm_target, 242, "normal·rel"))
+
+            print("   Heavy keys (slow)...")
+            new_pools[_PIDX_HEAVY] = self._to_sounds(
+                build_pool(audio, n_ch, sr, "heavy_key", p, pool_size, norm_target, 99, "heavy·slow"))
+
+            print("   Heavy keys (fast WPM)...")
+            new_pools[_PIDX_HEAVY_F] = self._to_sounds(
+                build_pool(audio, n_ch, sr, "heavy_key", p, pool_size, norm_target, 199, "heavy·fast",
+                           fast_modifier=wpm_mod))
+
+            print("   Heavy keys (release)...")
+            new_pools[_PIDX_HEAVY_R] = self._to_sounds(
+                build_release_pool(audio, n_ch, sr, p["heavy_key"]["release"],
+                                   pool_size, norm_target, 299, "heavy·rel"))
+
+            del audio; gc.collect()  # WAV float32 array hemen serbest
         else:
             log.warning("Key sound not found: %s", key_path)
             print(f"   [!] Ses dosyası bulunamadı: {key_path}")
 
-        # ── Fare sesleri ─────────────────────────────────────
+        # ── FARE ──────────────────────────────────────────────
         mouse_path = sound_dir / cfg["sound"]["mouse_file"]
         if mouse_path.exists():
             audio, n_ch = self._load_raw(mouse_path)
+
             print("   Mouse clicks...")
-            raw_pool = build_pool(audio, n_ch, sr, "mouse_click",
-                                  self._presets, pool_size, norm_target, 77, "mouse")
-            new_mouse = [self._bytes_to_sound(b) for b in raw_pool]
-            del raw_pool, audio; gc.collect()
+            new_pools[_PIDX_MOUSE] = self._to_sounds(
+                build_pool(audio, n_ch, sr, "mouse_click", p, pool_size, norm_target, 77, "mouse·click"))
+
+            print("   Mouse button 3 (middle)...")
+            new_pools[_PIDX_MOUSE3] = self._to_sounds(
+                build_pool(audio, n_ch, sr, "mouse_button3", p, pool_size, norm_target, 177, "mouse·btn3"))
+
+            del audio; gc.collect()
         else:
             log.warning("Mouse sound not found: %s", mouse_path)
             print(f"   [!] Ses dosyası bulunamadı: {mouse_path}")
 
-        # ── Özel atamalar ─────────────────────────────────────
+        # ── ÖZEL ATAMALAR ─────────────────────────────────────
+        new_custom: Dict[str, pygame.mixer.Sound] = {}
         for key_name, file_path in self._key_bindings.items():
             if os.path.isfile(file_path):
                 try:
@@ -319,22 +360,22 @@ class AudioEngine:
                     snd.set_volume(self._volume)
                     new_custom[key_name] = snd
                 except Exception as exc:
-                    log.warning("Custom bind load error (%s): %s", key_name, exc)
+                    log.warning("Custom bind error (%s): %s", key_name, exc)
 
         # ── Atomik pool değişimi ──────────────────────────────
         with self._pool_lock:
-            self._normal_pool  = new_normal
-            self._heavy_pool   = new_heavy
-            self._mouse_pool   = new_mouse
+            # Eski Sound nesneleri burada serbest bırakılır (refcount=0 → SDL belleği geri döner)
+            for i, pool in enumerate(new_pools):
+                self._pools[i] = pool
             self._custom_sounds = new_custom
-            self._last_normal  = self._last_heavy = self._last_mouse = -1
+            self._last_idx[:] = [-1] * _N_POOLS  # yeni liste yaratmadan sıfırla
 
+        del new_pools  # referans serbest
         gc.collect()
         print("  ▶ Hazır!\n")
 
     @property
     def active_voices(self) -> int:
-        """UI tarafından okunabilir aktif ses sayısı."""
         return self._active_voices
 
     @property
@@ -344,14 +385,8 @@ class AudioEngine:
     # ── PRIVATE: MIXER ─────────────────────────────────────────
 
     def _init_mixer(self) -> None:
-        """
-        Mixer başlatma.
-        'Re-init trick': bazı sistemlerde SDL kendi buffer boyutunu zorlarsa,
-        quit()+init() ile gerçek 512-sample buffer elde edilir.
-        """
-        if sys.platform == "win32" and self._cfg["mixer"]["use_directsound"]:
+        if sys.platform == "win32" and self._cfg["mixer"].get("use_directsound", True):
             os.environ.setdefault("SDL_AUDIODRIVER", "directsound")
-
         mcfg = self._cfg["mixer"]
         try:
             pygame.mixer.pre_init(
@@ -376,10 +411,6 @@ class AudioEngine:
             sys.exit(1)
 
     def _load_raw(self, path: Path) -> Tuple[np.ndarray, int]:
-        """
-        WAV → float32 numpy interleaved, kanal sayısı.
-        pygame.mixer WAV'ı mixer ayarlarına otomatik dönüştürür.
-        """
         snd    = pygame.mixer.Sound(str(path))
         raw    = snd.get_raw()
         freq, fmt, _ = pygame.mixer.get_init()
@@ -387,58 +418,49 @@ class AudioEngine:
         frames = max(1, int(snd.get_length() * freq))
         n_ch   = max(1, min(2, len(raw) // (frames * bps)))
         audio  = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32767.0
-        del snd  # pygame Sound nesnesini serbest bırak
+        del snd, raw  # pygame Sound ve bytes hemen serbest
         return audio, n_ch
 
-    def _bytes_to_sound(self, data: bytes) -> pygame.mixer.Sound:
-        """int16 PCM bytes → pygame.mixer.Sound, volume set edilmiş."""
-        snd = pygame.mixer.Sound(buffer=data)
-        snd.set_volume(self._volume)
-        return snd
+    def _to_sounds(self, raw_pool: List[bytes]) -> List[pygame.mixer.Sound]:
+        """bytes listesini Sound listesine çevir; bytes'ları hemen serbest bırak."""
+        result: List[pygame.mixer.Sound] = []
+        for data in raw_pool:
+            snd = pygame.mixer.Sound(buffer=data)
+            snd.set_volume(self._volume)
+            result.append(snd)
+        # OPT: raw_pool referansı burada düşer; bytes nesneleri GC'ye hazır
+        return result
 
     # ── PRIVATE: POOL SEÇİMİ ───────────────────────────────────
 
-    def _pick(self, pool: List[pygame.mixer.Sound],
-              attr: str) -> Optional[pygame.mixer.Sound]:
+    def _pick(self, pidx: int) -> Optional[pygame.mixer.Sound]:
         """
-        Pool'dan son çalınandan farklı rastgele varyasyon seç.
-        GIL korumalı — kilit gerekmez (pool yalnızca reload'da değişir,
-        o sırada is_customizing=True ve kuyruk durur).
+        Pool'dan son çalınandan farklı rastgele ses seç.
+        OPT: getattr/setattr string lookup yerine _last_idx[pidx] int indexing.
         """
         with self._pool_lock:
-            n = len(pool)
+            pool = self._pools[pidx]
+            n    = len(pool)
             if n == 0:
                 return None
             if n == 1:
                 return pool[0]
-            last = getattr(self, attr)
+            last = self._last_idx[pidx]
             idx  = last
             for _ in range(10):
-                import random
                 idx = random.randrange(n)
                 if idx != last:
                     break
-            setattr(self, attr, idx)
+            self._last_idx[pidx] = idx
             return pool[idx]
 
     # ── PRIVATE: AUDIO LOOP ────────────────────────────────────
 
     def _audio_loop(self) -> None:
-        """
-        Audio engine ana döngüsü — ayrı thread'de çalışır.
-
-        Her iterasyonda:
-          1. Yeni komutları kuyruğundan al (en fazla batch_max adet)
-          2. Her komut için: ses seç → kanal al → equal-power vol → ch.play()
-          3. Bitiş eventlerini temizle (pygame event queue dolmasın)
-          4. active_voices'ı gerçek kanal sayısıyla güncelle
-          5. Wakeup event'ini bekle (yeni komut veya timeout=loop_ms)
-        """
         loop_ms   = self._cfg["engine"]["audio_loop_ms"] / 1000.0
         batch_max = self._cfg["engine"]["queue_batch_max"]
 
         while self._running:
-            # ── 1. Kuyruk drain ───────────────────────────────
             processed = 0
             while processed < batch_max:
                 try:
@@ -448,45 +470,53 @@ class AudioEngine:
                 self._do_play(cmd)
                 processed += 1
 
-            # ── 2. End eventleri temizle ──────────────────────
             self._ring.drain_end_events()
-
-            # ── 3. Gerçek voice count ─────────────────────────
             self._active_voices = self._ring.active_count()
-
-            # ── 4. Bir sonraki komuta kadar bekle ─────────────
             self._wakeup.wait(timeout=loop_ms)
             self._wakeup.clear()
 
+        # OPT: thread kapanırken kuyruk referanslarını temizle
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+
     def _do_play(self, cmd: PlayCommand) -> None:
         """
-        Ses çal — yalnızca _audio_loop() içinden çağrılır.
+        Ses seç → kanal al → equal-power vol → ch.play()
 
-        Equal-power mixing:
-          N aktif ses iken yeni ses = volume / √(N+1)
-          Bu SDL_mixer'ın sample-sum karıştırmasında int16 taşmasını engeller.
-          N=0→1.0× | N=3→0.5× | N=8→0.33× | minimum 0.42×
+        Yönlendirme: _PIDX_* sabitlerle doğrudan array indexing.
         """
-        # Ses seç
-        sound: Optional[pygame.mixer.Sound] = self._custom_sounds.get(cmd.key_id)
+        sound: Optional[pygame.mixer.Sound] = None
+        if not cmd.is_release:
+            sound = self._custom_sounds.get(cmd.key_id)
+
+        if not cmd.is_release and not cmd.is_mouse:
+            self._wpm.record()
 
         if sound is None:
-            if cmd.is_mouse:
-                sound = self._pick(self._mouse_pool,  "_last_mouse")
-            elif cmd.key_id in HEAVY_KEYS:
-                sound = self._pick(self._heavy_pool,  "_last_heavy")
+            if cmd.is_release:
+                pidx = _PIDX_HEAVY_R if cmd.key_id in HEAVY_KEYS else _PIDX_NORMAL_R
+                sound = self._pick(pidx)
+
+            elif cmd.is_mouse:
+                pidx = _PIDX_MOUSE3 if cmd.key_id == MOUSE3_KEY else _PIDX_MOUSE
+                sound = self._pick(pidx)
+
             else:
-                sound = self._pick(self._normal_pool, "_last_normal")
+                fast = self._wpm.wpm() >= self._wpm_thresh
+                if cmd.key_id in HEAVY_KEYS:
+                    pidx = _PIDX_HEAVY_F if fast else _PIDX_HEAVY
+                else:
+                    pidx = _PIDX_NORMAL_F if fast else _PIDX_NORMAL
+                sound = self._pick(pidx)
 
         if sound is None:
             return
 
-        # Kanal + aktif sayı (tek atomik işlem)
         ch, n_active = self._ring.acquire()
-
-        # Equal-power volume
-        eq_scale = max(0.42, 1.0 / (n_active + 1) ** 0.5)
-        vol      = self._volume * eq_scale
-
-        ch.set_volume(vol)
+        release_scale = 0.80 if cmd.is_release else 1.0
+        eq_scale = max(0.42, 1.0 / (n_active + 1) ** 0.5) * release_scale
+        ch.set_volume(self._volume * eq_scale)
         ch.play(sound)
