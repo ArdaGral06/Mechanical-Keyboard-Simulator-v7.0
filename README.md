@@ -18,7 +18,7 @@ terminal-based mechanical keyboard simulator that reproduces realistic key and m
 
 ## 🕹️How To Use
 * if you want to set volume type 0 - 1 // 0 = 0% / 1 = 100%
-* if you want to create a custom key sound effects for a key, press **c** and then Enter. Then enter your file dir and press enter again thats it.
+* if you want to create a custom key sound effects for a key, press **c** and you got a user interface. type 1 to select single .wav file, if you select then press which key you want to set the selected .wav sound effect. If you want add multiple .wav file and set multiple key sound type 2 select an folder and the folder should contain key names example: if you want to add space key sound effect and enter sound effect you need to add in the folders "space.wav" file for space key and "enter.wav" to enter key. And last one you can cancel with 0. """NOTE: If the file selection screen doesn't appear, you can type the path of the folder or file."""
 * if you want to keyboard sound effect play continuously press **r** and enter therefore, as long as you hold down the button, the sound effect will continuously repeat itself.
 * and last one if you want to close the code you can type just **q** or **exit** you can also use a classic way press **ctrl+c**.
 
