@@ -353,13 +353,47 @@ def interactive_custom_flow(
         print(f"\n  ✔ {wav_path.name} → {captured}")
         return new_bindings
 
-    # ── MOD 2: Klasör Otomatik Tarama ─────────────────────────
+    # ── MOD 2: Klasör ─────────────────────────────────────────
     if choice == "2":
         folder = _pick_folder(use_gui, s)
         if not folder:
             print(f"\n  {s['custom_cancel']}")
             return None
 
+        # ── ADIM 1: JSON TARAMA ───────────────────────────────────
+        # Klasörde .json varsa → JSON pack modu (Mechvibes format)
+        json_files = sorted(folder.glob("*.json"))
+        if json_files:
+            try:
+                from sound_pack_loader import PACK_FOLDER_KEY, peek_json_info
+                info = peek_json_info(json_files[0])
+
+                print("\n" + "─" * 52)
+                print(f"  ✦ {s.get('pack_detected', 'JSON soundpack tespit edildi')}: {json_files[0].name}")
+                print(f"    {s.get('pack_name', 'İsim')}: {info['name']}")
+                print(f"    {s.get('pack_type', 'Tip')}: {info['type']}")
+                print(f"    {s.get('pack_sound', 'Ses')}: {info['sound_file']}")
+                print(f"    {s.get('pack_keys', 'Tuş sayısı')}: {info['key_count']}")
+                print("─" * 52)
+                print(f"  {s.get('pack_hint', 'Tek ses dosyası + keycode sprite sistem (Mechvibes)')}")
+                print("─" * 52)
+
+                _confirm_suffix = "(Enter=Yes, n=No)" if lang == "en" else "(Enter=Evet, n=Hayir)"
+                confirm = input(f"  {s.get('pack_use', 'Use this pack?')} {_confirm_suffix}: ").strip().lower()
+
+                if confirm != "n":
+                    # JSON pack modu aktif
+                    # engine.reload_sounds() PACK_FOLDER_KEY görünce paketi yükler
+                    print(f"\n  ✔ {s.get('pack_activated', 'JSON pack modu aktif edildi.')}")
+                    return {PACK_FOLDER_KEY: str(folder)}
+
+                # Kullanıcı reddetti → klasik tarama
+                print(f"\n  {s.get('pack_skipped', 'Pack atlandı, klasik .wav taraması başlıyor...')}")
+
+            except ImportError:
+                pass  # sound_pack_loader.py yoksa klasik moda geç
+
+        # ── ADIM 2: KLASİK .wav TARAMA ────────────────────────────
         print(f"\n  {s['mapper_scanning']}: {folder}")
         result = scan_folder(folder)
 
