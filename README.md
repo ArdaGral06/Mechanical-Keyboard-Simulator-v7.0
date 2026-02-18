@@ -1,3 +1,9 @@
+known issues:
+- For mouse usually freezes for a few seconds when you first enter the game.
+- multiple OS problems
+- All of these issues will be fixed in approximately 1 or 2 days.
+
+
 # Mechanical-Keyboard-Simulator-v7.0
 terminal-based mechanical keyboard simulator that reproduces realistic key and mouse sounds with near-zero latency. Supports customizable key bindings, adjustable volume, repeat mode, and multiple DSP presets for authentic typing feedback. The sensation of pressing a different key from a single audio file.
 
