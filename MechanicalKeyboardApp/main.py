@@ -1,11 +1,16 @@
 """
-main.py — Giriş Noktası & Komut Döngüsü v2.1 (RAM Optimized)
-==============================================================
-RAM optimizasyonları:
-  1. RotatingFileHandler (max 512KB, 1 backup) — log dosyası büyümez
-  2. gc.freeze() — startup sonrası uzun yaşayan nesneler GC taramasından çıkar
-  3. GC threshold ayarı — typing sırasında gereksiz GC döngüsü engellendi
-  4. gc.disable() audio loop süresince — kritik kısımda GC pause yok
+main.py — Giriş Noktası & Komut Döngüsü v2.2 (Enhanced Realism)
+==================================================================
+v2.2 YENİLİKLERİ:
+  1. InputHandler'a WPM callback desteği — release volume WPM-aware
+  2. Engine enqueue_play signature güncellendi — duration + last_key
+  3. Tüm optimizasyonlar korundu
+
+RAM optimizasyonları (v2.1'den devam):
+  1. RotatingFileHandler (max 512KB, 1 backup)
+  2. gc.freeze() — startup sonrası uzun yaşayan nesneler GC'den çıkar
+  3. GC threshold ayarı
+  4. gc.disable() audio loop süresince (engine içinde)
 """
 
 from __future__ import annotations
@@ -27,15 +32,13 @@ from sound_mapper  import interactive_custom_flow
 
 # ─────────────────────────────────────────────────────────────
 #  LOGLAMA — RotatingFileHandler
-#  OPT: FileHandler sınırsız büyür. RotatingFileHandler max 512KB → log RAM'e
-#  yüklendiğinde bile sınırlı. backupCount=1 → toplam max ~1MB disk.
 # ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     level   = logging.WARNING,
     format  = "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers= [logging.handlers.RotatingFileHandler(
         "keyboard_sim.log",
-        maxBytes    = 512 * 1024,   # 512 KB
+        maxBytes    = 512 * 1024,
         backupCount = 1,
         encoding    = "utf-8",
     )],
@@ -89,7 +92,6 @@ def _save_bindings(cfg: dict, bindings: dict) -> None:
 class AppState:
     """
     __slots__ ile her instance field için dict overhead yok.
-    OPT: pressed_keys = set() → InputHandler watchdog ile sınırlı (max 30).
     """
     __slots__ = (
         "running", "is_customizing", "repeat_mode",
@@ -163,7 +165,7 @@ def handle_command(
 
 
 # ─────────────────────────────────────────────────────────────
-#  ANA FONKSİYON
+#  ANA FONKSİYON v2.2
 # ─────────────────────────────────────────────────────────────
 def main() -> None:
     cfg     = _load_json(_CONFIG_PATH,  "Config")
@@ -182,22 +184,16 @@ def main() -> None:
     engine.reload_sounds()
     engine.start()
 
-    # ── GC OPTİMİZASYONLARI — startup tamamlandıktan sonra ───
-    #
-    # gc.collect() — startup artığı geçici nesneleri temizle
+    # ── GC OPTİMİZASYONLARI ───────────────────────────────────
     gc.collect()
-    #
-    # gc.freeze() — şu anki tüm nesneleri "generation 2 permanent" yap.
-    # Bunlar artık minor GC (gen0/gen1) taramasına girmez.
-    # Etki: DSP array'leri, Sound nesneleri, pygame objeler → GC'den muaf.
-    # Yazma döngüsünde oluşan küçük nesneler (PlayCommand, strings) gen0'da
-    # hızlı toplanır, büyük nesnelere dokunulmaz.
     gc.freeze()
-    #
-    # GC threshold: (700, 10, 10) → gen0 her 700 alloc'ta bir taranır.
-    # Default (700, 10, 10) zaten makul; sadece freeze() yeterli.
-    # Agresif mod istenirse: gc.set_threshold(1000, 15, 15)
-    # ─────────────────────────────────────────────────────────
+
+    # CHANGE v2.2: InputHandler'a WPM callback ekle
+    # Release volume WPM'e göre ayarlanacak
+    def get_wpm() -> float:
+        """Engine'deki WPM değerini döndür."""
+        base, _ = engine._wpm.burst_wpm()
+        return base
 
     handler = InputHandler(
         enqueue_fn      = engine.enqueue_play,
@@ -206,6 +202,7 @@ def main() -> None:
         get_repeat      = lambda: state.repeat_mode,
         get_running     = lambda: state.running,
         get_release     = lambda: cfg["app"].get("release_enabled", True),
+        get_wpm         = get_wpm,  # CHANGE: WPM callback
     )
     handler.start()
 
@@ -242,7 +239,6 @@ def main() -> None:
     handler.stop()
     engine.stop()
 
-    # OPT: gc.unfreeze() + son collect — kapanışta belleği tam temizle
     gc.unfreeze()
     gc.collect()
 
