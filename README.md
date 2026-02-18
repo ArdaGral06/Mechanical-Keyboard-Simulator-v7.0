@@ -14,7 +14,7 @@ terminal-based mechanical keyboard simulator that reproduces realistic key and m
 * Simple way: find your code folders (folders name should be: MechanicalKeyboardApp)  right click on it and click "**Open in Windows Terminal**" Or:
 * open powershell from your computer
 * type cd C:\Users\Enter_the_directory_of_the_folder_containing_the_code_you_downloaded_from_my_GitHub_repo
-* then type py "main.py" and there you go code is working now.
+* then type **py "main.py"** and there you go code is working now.
 
 ## 🕹️ How To Use
 * if you want to set volume type 0 - 1 // 0 = 0% / 1 = 100%
