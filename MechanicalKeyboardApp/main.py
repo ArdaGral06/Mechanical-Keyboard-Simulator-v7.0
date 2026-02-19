@@ -26,7 +26,11 @@ from pathlib import Path
 from typing import Optional
 
 from engine        import AudioEngine
-from input_handler import InputHandler, SingleKeyCapture
+from input_handler import (
+    InputHandler, SingleKeyCapture,
+    _setup_windows_timer, _teardown_windows_timer,
+    _check_platform_prerequisites,
+)
 from ui            import STRINGS, select_language, update_ui
 from sound_mapper  import interactive_custom_flow
 
@@ -51,13 +55,13 @@ _PRESETS_PATH = Path(__file__).parent / "presets.json"
 
 def _load_json(path: Path, what: str) -> dict:
     if not path.exists():
-        print(f"[FATAL] {what} dosyası bulunamadı: {path}")
+        print(f"[FATAL] {what} file not found: {path}")
         sys.exit(1)
     try:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError as exc:
-        print(f"[FATAL] {what} parse hatası: {exc}")
+        print(f"[FATAL] {what} parse error: {exc}")
         sys.exit(1)
 
 
@@ -120,11 +124,11 @@ def handle_command(
     s   = STRINGS[state.lang]
     cmd = raw.strip().lower()
 
-    if cmd in ("exit", "q", "quit", "çık"):
+    if cmd in ("exit", "q", "quit"):
         state.running = False
         return ""
 
-    if cmd in ("c", "custom", "özelleştir"):
+    if cmd in ("c", "custom"):
         state.is_customizing = True
         new_bindings = interactive_custom_flow(
             lang             = state.lang,
@@ -136,13 +140,13 @@ def handle_command(
             engine._key_bindings = state.bindings
             print(f"\n  {s['reloading']}")
             engine.reload_sounds()
-            state.last_action = f"Bound: {len(new_bindings)} ses"
+            state.last_action = f"Bound: {len(new_bindings)} sounds"
             state.is_customizing = False
             return s["custom_success"]
         state.is_customizing = False
         return s["custom_cancel"]
 
-    if cmd in ("r", "repeat", "tekrar"):
+    if cmd in ("r", "repeat"):
         state.repeat_mode = not state.repeat_mode
         notif = s["rep_on"] if state.repeat_mode else s["rep_off"]
         state.last_action = notif
@@ -180,6 +184,14 @@ def main() -> None:
     s = STRINGS[state.lang]
 
     # ── Audio Engine + ses havuzları ──────────────────────────
+    # Platform checks (Accessibility on macOS, Wayland warning on Linux)
+    _check_platform_prerequisites()
+
+    # Windows: set multimedia timer to 1ms resolution.
+    # Without this, threading.Event.wait() has ~15ms granularity,
+    # causing the audio loop to tick at 15ms instead of 1ms.
+    _setup_windows_timer()
+
     engine = AudioEngine(cfg=cfg, presets=presets, key_bindings=state.bindings)
     engine.reload_sounds()
     engine.start()
@@ -238,6 +250,7 @@ def main() -> None:
     print(f"\n  {s['closing']}")
     handler.stop()
     engine.stop()
+    _teardown_windows_timer()
 
     gc.unfreeze()
     gc.collect()
