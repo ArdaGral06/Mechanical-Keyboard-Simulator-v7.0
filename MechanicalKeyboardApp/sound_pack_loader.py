@@ -174,7 +174,7 @@ class _SoundFileCache:
                 snd.set_volume(volume)
                 self._cache[path] = snd
             except Exception as exc:
-                log.warning("Ses yüklenemedi (%s): %s", path, exc)
+                log.warning("Sound load failed (%s): %s", path, exc)
                 return None
         return self._cache[path]
 
@@ -426,5 +426,5 @@ class KeyPackLoader:
                 keybinds[key_id] = str(file)
 
         self._mode = "fallback"
-        print(f"   [Fallback] {len(self._fb_sounds)} tuş eşlendi")
+        print(f"   [Fallback] {len(self._fb_sounds)} keys matched")
         return keybinds
