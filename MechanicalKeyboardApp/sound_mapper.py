@@ -373,9 +373,9 @@ def interactive_custom_flow(
                 print(f"    {s.get('pack_name', 'İsim')}: {info['name']}")
                 print(f"    {s.get('pack_type', 'Tip')}: {info['type']}")
                 print(f"    {s.get('pack_sound', 'Ses')}: {info['sound_file']}")
-                print(f"    {s.get('pack_keys', 'Tuş sayısı')}: {info['key_count']}")
+                print(f"    {s.get('pack_keys', 'Key count')}: {info['key_count']}")
                 print("─" * 52)
-                print(f"  {s.get('pack_hint', 'Tek ses dosyası + keycode sprite sistem (Mechvibes)')}")
+                print(f"  {s.get('pack_hint', 'Single audio + keycode sprite system (Mechvibes)')}")
                 print("─" * 52)
 
                 _confirm_suffix = "(Enter=Yes, n=No)" if lang == "en" else "(Enter=Evet, n=Hayir)"
